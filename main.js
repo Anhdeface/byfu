@@ -15,8 +15,10 @@
     // =========================================================
     // 0. COMMUNICATION PORT (INVISIBLE TO DOM)
     // =========================================================
-    // Use a completely randomized initialization string to prevent honeypot detection
-    const INIT_MSG = "byfu_port_" + Math.random().toString(36).substring(2);
+    // Dynamic token handshake without static prefixes or honeypot signatures
+    const handshakeToken = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : (Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2) + Date.now().toString(36));
     const commChannel = new MessageChannel();
     let filtersTriggered = false;
 
@@ -29,7 +31,7 @@
         } catch (e) { }
     };
     
-    window.postMessage(INIT_MSG, "*", [commChannel.port2]);
+    window.postMessage({ token: handshakeToken }, "*", [commChannel.port2]);
     sendLog('usage_start', location.href);
     
     window.addEventListener('load', () => {
@@ -228,55 +230,132 @@
     }
 
     // =========================================================
-    // 6. CANVAS FINGERPRINT PROTECTION (NON-DETERMINISTIC)
+    // 6. CANVAS FINGERPRINT PROTECTION (NON-DESTRUCTIVE & SOLID-SAFE)
     // =========================================================
-    const taintedCanvases = new WeakSet();
-
     // Session salt generated once per page load to ensure noise is unique per session but deterministic per canvas
     const SESSION_SALT = Math.random();
+    const originalGetImageData = typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D.prototype.getImageData : null;
 
-    function applyCanvasNoise(canvas) {
-        if (!canvas || canvas.width <= 16 || canvas.height <= 16 || taintedCanvases.has(canvas)) return;
-        try {
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            if (ctx) {
-                taintedCanvases.add(canvas);
-                
-                // Deterministic pseudo-random based on dimensions and session salt.
-                // Guarantees that identical canvases (e.g. during an anti-cheat's double-hash check)
-                // get the EXACT same noise overlay, producing identical hashes, thus defeating spoofer detection.
-                const seed1 = (canvas.width * 13) * SESSION_SALT;
-                const seed2 = (canvas.height * 7) * SESSION_SALT;
-                
-                const rX = Math.floor(seed1 % Math.max(1, canvas.width - 1));
-                const rY = Math.floor(seed2 % Math.max(1, canvas.height - 1));
-                const r = Math.floor((seed1 * 3) % 20);
-                const g = Math.floor((seed2 * 5) % 20);
-                const b = Math.floor((seed1 + seed2) % 20);
-                const a = ((seed1 % 3) * 0.001 + 0.001).toFixed(4);
-                
-                ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
-                ctx.fillRect(rX, rY, 1, 1);
-                sendLog('success', 'Canvas fingerprint dynamically protected');
+    /**
+     * Checks whether the canvas pixel buffer is completely transparent (blank) or a solid uniform color.
+     * Prevents anti-cheat tampering detection on solid backgrounds (e.g. #000000 tests) and empty canvases.
+     * @param {Uint8ClampedArray} data - Raw RGBA pixel array
+     * @returns {boolean} True if all pixels are identical (uniform or empty)
+     */
+    function isUniformOrBlank(data) {
+        if (!data || data.length === 0) return true;
+        const len = data.length;
+        const r0 = data[0];
+        const g0 = data[1];
+        const b0 = data[2];
+        const a0 = data[3];
+
+        for (let i = 4; i < len; i += 4) {
+            if (data[i] !== r0 || data[i + 1] !== g0 || data[i + 2] !== b0 || data[i + 3] !== a0) {
+                return false;
             }
-        } catch (e) { }
+        }
+        return true;
+    }
+
+    /**
+     * Applies subtle, deterministic pseudo-random noise to varied pixels.
+     * Modifies R/G/B channels by ±1 LSB based on coordinates, canvas dimensions, and session salt.
+     * Guarantees 100% deterministic reproducibility across identical canvases during double-hash checks.
+     * @param {ImageData} imageData - Target image data
+     * @param {number} width - Canvas width
+     * @param {number} height - Canvas height
+     * @returns {ImageData}
+     */
+    function applyDeterministicNoise(imageData, width, height) {
+        if (!imageData || !imageData.data) return imageData;
+        const data = imageData.data;
+        const len = data.length;
+        const saltInt = Math.floor(SESSION_SALT * 1000000);
+
+        for (let i = 0; i < len; i += 4) {
+            if (data[i + 3] === 0) continue; // Skip fully transparent pixels
+
+            const pixelIndex = i / 4;
+            const x = pixelIndex % width;
+            const y = Math.floor(pixelIndex / width);
+
+            const pseudo = Math.abs(((x * 127 + y * 311 + width * 17 + height * 71 + saltInt) ^ 0x5DEECE66) % 13);
+
+            if (pseudo === 1) {
+                data[i] = data[i] >= 254 ? 253 : (data[i] <= 1 ? 2 : data[i] + 1);
+            } else if (pseudo === 2) {
+                data[i + 1] = data[i + 1] >= 254 ? 253 : (data[i + 1] <= 1 ? 2 : data[i + 1] - 1);
+            } else if (pseudo === 3) {
+                data[i + 2] = data[i + 2] >= 254 ? 253 : (data[i + 2] <= 1 ? 2 : data[i + 2] + 1);
+            }
+        }
+        return imageData;
+    }
+
+    /**
+     * Generates a protected offscreen canvas with subtle deterministic noise.
+     * Returns the original canvas untouched if the canvas is blank or solid color.
+     * @param {HTMLCanvasElement} originalCanvas
+     * @returns {HTMLCanvasElement}
+     */
+    function getNoisedCanvas(originalCanvas) {
+        if (!originalCanvas || originalCanvas.width <= 0 || originalCanvas.height <= 0 || !originalGetImageData) return originalCanvas;
+        try {
+            const ctx = originalCanvas.getContext('2d');
+            if (!ctx) return originalCanvas;
+
+            const w = originalCanvas.width;
+            const h = originalCanvas.height;
+            const imgData = $apply(originalGetImageData, ctx, [0, 0, w, h]);
+
+            if (!imgData || !imgData.data || isUniformOrBlank(imgData.data)) {
+                return originalCanvas;
+            }
+
+            const offscreen = document.createElement('canvas');
+            offscreen.width = w;
+            offscreen.height = h;
+            const offCtx = offscreen.getContext('2d');
+            if (!offCtx) return originalCanvas;
+
+            const noisedData = applyDeterministicNoise(imgData, w, h);
+            offCtx.putImageData(noisedData, 0, 0);
+            return offscreen;
+        } catch (e) {
+            return originalCanvas;
+        }
     }
 
     ['toDataURL', 'toBlob'].forEach(method => {
         proxyFunction(HTMLCanvasElement.prototype, method, {
             apply(target, thisArg, args) {
-                applyCanvasNoise(thisArg);
+                try {
+                    const noisedCanvas = getNoisedCanvas(thisArg);
+                    if (noisedCanvas !== thisArg) {
+                        sendLog('success', 'Canvas fingerprint dynamically protected');
+                        return $apply(target, noisedCanvas, args);
+                    }
+                } catch (e) { }
                 return $apply(target, thisArg, args);
             }
         });
     });
 
-    proxyFunction(CanvasRenderingContext2D.prototype, 'getImageData', {
-        apply(target, thisArg, args) {
-            if (thisArg && thisArg.canvas) applyCanvasNoise(thisArg.canvas);
-            return $apply(target, thisArg, args);
-        }
-    });
+    if (typeof CanvasRenderingContext2D !== 'undefined') {
+        proxyFunction(CanvasRenderingContext2D.prototype, 'getImageData', {
+            apply(target, thisArg, args) {
+                const res = $apply(target, thisArg, args);
+                try {
+                    if (res && res.data && !isUniformOrBlank(res.data)) {
+                        applyDeterministicNoise(res, res.width, res.height);
+                        sendLog('success', 'Canvas fingerprint dynamically protected');
+                    }
+                } catch (e) { }
+                return res;
+            }
+        });
+    }
 
     // =========================================================
     // 7. EVENT SYSTEM & LMS BYPASS
@@ -586,6 +665,17 @@
         })();
     `;
 
+    // Helper to sanitize worker telemetry on outgoing messages
+    function sanitizeWorkerTelemetry(data) {
+        if (data && typeof data === 'object') {
+            if ('hardwareConcurrency' in data) data.hardwareConcurrency = 8;
+            if ('deviceMemory' in data) data.deviceMemory = 8;
+            if ('webdriver' in data) data.webdriver = false;
+        }
+    }
+
+    const workerListenerMap = new WeakMap();
+
     proxyFunction(window, 'Worker', {
         construct(target, args, newTarget) {
             try {
@@ -614,14 +704,74 @@
                             sendLog('info', 'Worker anti-detection active (Data URL)');
                             return worker2;
                         } catch (cspErr2) {
-                            // If Strict CSP blocks both Blob and Data URLs, DO NOT expose a naked worker.
-                            // A naked worker runs native code without our proxies and could easily exfiltrate
-                            // real hardware/fingerprint data directly to the server via its own fetch() or XHR,
-                            // completely bypassing our postMessage proxy.
-                            // Throwing an error forces the anti-cheat to fallback to main-thread fingerprinting,
-                            // which is fully protected by our existing hooks.
-                            sendLog('warning', 'Strict CSP blocked protected worker. Creation aborted to prevent data leak via fetch().');
-                            throw new Error("Worker creation blocked by CSP");
+                            // Strict CSP fallback (e.g. worker-src 'self'):
+                            // Gracefully construct native Worker with the legitimate target URL without throwing DoS errors.
+                            // Proxies addEventListener and onmessage to sanitize telemetry sent from Worker to Main Thread.
+                            args[0] = absoluteUrl;
+                            const rawWorker = Reflect.construct(target, args, newTarget);
+
+                            const wrappedWorker = new Proxy(rawWorker, {
+                                get(t, p) {
+                                    if (p === 'addEventListener') {
+                                        const customAddListener = function(type, listener, opts) {
+                                            if (type === 'message' && typeof listener === 'function') {
+                                                let wrapped = workerListenerMap.get(listener);
+                                                if (!wrapped) {
+                                                    wrapped = function(e) {
+                                                        if (e && e.data) {
+                                                            sanitizeWorkerTelemetry(e.data);
+                                                        }
+                                                        return $apply(listener, this, arguments);
+                                                    };
+                                                    hF.add(wrapped);
+                                                    workerListenerMap.set(listener, wrapped);
+                                                }
+                                                return $apply(t.addEventListener, t, [type, wrapped, opts]);
+                                            }
+                                            return $apply(t.addEventListener, t, arguments);
+                                        };
+                                        hF.add(customAddListener);
+                                        return customAddListener;
+                                    }
+                                    if (p === 'removeEventListener') {
+                                        const customRemoveListener = function(type, listener, opts) {
+                                            if (type === 'message' && typeof listener === 'function') {
+                                                const wrapped = workerListenerMap.get(listener);
+                                                if (wrapped) {
+                                                    return $apply(t.removeEventListener, t, [type, wrapped, opts]);
+                                                }
+                                            }
+                                            return $apply(t.removeEventListener, t, arguments);
+                                        };
+                                        hF.add(customRemoveListener);
+                                        return customRemoveListener;
+                                    }
+                                    if (p === 'onmessage') return t.onmessage;
+                                    return typeof t[p] === 'function' ? t[p].bind(t) : t[p];
+                                },
+                                set(t, p, val) {
+                                    if (p === 'onmessage') {
+                                        if (typeof val === 'function') {
+                                            const safeListener = function(e) {
+                                                if (e && e.data) {
+                                                    sanitizeWorkerTelemetry(e.data);
+                                                }
+                                                return $apply(val, this, arguments);
+                                            };
+                                            hF.add(safeListener);
+                                            t.onmessage = safeListener;
+                                        } else {
+                                            t.onmessage = val;
+                                        }
+                                        return true;
+                                    }
+                                    t[p] = val;
+                                    return true;
+                                }
+                            });
+                            hF.add(wrappedWorker);
+                            sendLog('warning', 'Strict CSP active. Worker running with telemetry sanitization.');
+                            return wrappedWorker;
                         }
                     }
                 }

@@ -1,8 +1,6 @@
-const INIT_MSG_PREFIX = "byfu_port_";
-
 window.addEventListener("message", function initListener(e) {
-  // Use a randomized prefix to avoid static string signatures or honeypots
-  if (e.source === window && typeof e.data === 'string' && e.data.startsWith(INIT_MSG_PREFIX) && e.ports && e.ports[0]) {
+  // Dynamic token-based handshake without static prefix or signature
+  if (e.source === window && e.data && typeof e.data.token === 'string' && e.data.token.length >= 10 && e.ports && e.ports[0]) {
     // Hide this initialization event from the target page completely
     e.stopImmediatePropagation();
     window.removeEventListener("message", initListener, true);
