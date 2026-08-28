@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         byfu (Stealth Shield)
 // @namespace    http://tampermonkey.net/
-// @version      7.5.0
+// @version      8.0.0
 // @description  Zero-Footprint Anti-Detection & LMS Shield
 // @author       evilst
 // @match        *://*/*
@@ -12,16 +12,8 @@
 (function () {
     'use strict';
 
-    // Guard against multiple executions in same context without creating global variables
-    if (EventTarget.prototype.__byfu_initialized) return;
-    try {
-        Object.defineProperty(EventTarget.prototype, '__byfu_initialized', {
-            value: true,
-            writable: false,
-            enumerable: false,
-            configurable: false
-        });
-    } catch (e) { }
+    // Removed the detectable __byfu_initialized footprint on EventTarget.prototype.
+    // MV3 registerContentScripts guarantees single execution per document frame.
 
     const INTERNAL_BRIDGE = "__byfu_evt_bridge__";
     let filtersTriggered = false;
@@ -76,6 +68,8 @@
         }
     });
 
+    // We do NOT use Object.defineProperty on Function.prototype if we can avoid footprint, 
+    // but we must for toString. It's an expected native function though.
     Object.defineProperty(Function.prototype, 'toString', {
         value: proxiedToString,
         writable: true,
@@ -182,9 +176,29 @@
     });
 
     // =========================================================
-    // 3. WEBDRIVER
+    // 3. HARDWARE & WEBDRIVER FINGERPRINT SPOOFING
     // =========================================================
     proxyGetter(Navigator.prototype, 'webdriver', () => false);
+    proxyGetter(Navigator.prototype, 'hardwareConcurrency', () => 8); // Standardize core count
+    proxyGetter(Navigator.prototype, 'deviceMemory', () => 8); // Standardize RAM
+
+    // WebGL Vendor/Renderer Spoofing
+    const spoofWebGLParameter = {
+        apply(target, thisArg, args) {
+            const param = args[0];
+            // 37445 = UNMASKED_VENDOR_WEBGL, 37446 = UNMASKED_RENDERER_WEBGL
+            if (param === 37445) return 'Google Inc. (Apple)';
+            if (param === 37446) return 'ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)';
+            return Reflect.apply(target, thisArg, args);
+        }
+    };
+
+    if (window.WebGLRenderingContext) {
+        proxyFunction(WebGLRenderingContext.prototype, 'getParameter', spoofWebGLParameter);
+    }
+    if (window.WebGL2RenderingContext) {
+        proxyFunction(WebGL2RenderingContext.prototype, 'getParameter', spoofWebGLParameter);
+    }
 
     // =========================================================
     // 4. CANVAS FINGERPRINT PROTECTION (WEAKSET-BASED)
@@ -223,7 +237,7 @@
     });
 
     // =========================================================
-    // 5. EVENT SYSTEM (SYMMETRIC ADD/REMOVE & ON-PROPERTIES)
+    // 5. EVENT SYSTEM & LMS BYPASS
     // =========================================================
     const blockedEvents = new Set([
         'visibilitychange', 'webkitvisibilitychange', 'mozvisibilitychange', 'msvisibilitychange',
@@ -363,6 +377,20 @@
         hookOnProp(HTMLElement.prototype);
     });
 
+    // LMS Bypass: Prevent websites from blocking copy, paste, and context menu actions
+    const lmsProtectedEvents = new Set(['copy', 'paste', 'cut', 'contextmenu', 'selectstart', 'dragstart']);
+    proxyFunction(Event.prototype, 'preventDefault', {
+        apply(target, thisArg, args) {
+            if (thisArg && typeof thisArg.type === 'string' && lmsProtectedEvents.has(thisArg.type.toLowerCase())) {
+                if (thisArg.isTrusted) {
+                    sendLog('success', `Bypassed LMS restriction on ${thisArg.type}`);
+                    return; // Completely ignore the preventDefault call!
+                }
+            }
+            return Reflect.apply(target, thisArg, args);
+        }
+    });
+
     // =========================================================
     // 6. ANTI-DEBUGGER NEUTRALIZATION
     // =========================================================
@@ -445,6 +473,24 @@
             }
             if (win.Navigator && win.Navigator.prototype) {
                 proxyGetter(win.Navigator.prototype, 'webdriver', () => false);
+                proxyGetter(win.Navigator.prototype, 'hardwareConcurrency', () => 8);
+                proxyGetter(win.Navigator.prototype, 'deviceMemory', () => 8);
+            }
+            if (win.WebGLRenderingContext) {
+                proxyFunction(win.WebGLRenderingContext.prototype, 'getParameter', spoofWebGLParameter);
+            }
+            if (win.WebGL2RenderingContext) {
+                proxyFunction(win.WebGL2RenderingContext.prototype, 'getParameter', spoofWebGLParameter);
+            }
+            if (win.Event && win.Event.prototype) {
+                proxyFunction(win.Event.prototype, 'preventDefault', {
+                    apply(target, thisArg, args) {
+                        if (thisArg && typeof thisArg.type === 'string' && lmsProtectedEvents.has(thisArg.type.toLowerCase()) && thisArg.isTrusted) {
+                            return;
+                        }
+                        return Reflect.apply(target, thisArg, args);
+                    }
+                });
             }
             if (win.Function) {
                 proxyFunction(win, 'Function', {
@@ -498,14 +544,19 @@
         (function() {
             try {
                 if (self.Navigator && self.Navigator.prototype) {
-                    const desc = Object.getOwnPropertyDescriptor(self.Navigator.prototype, 'webdriver');
-                    if (desc && desc.get) {
-                        Object.defineProperty(self.Navigator.prototype, 'webdriver', {
-                            get: function() { return false; },
-                            configurable: true,
-                            enumerable: true
-                        });
-                    }
+                    const spoofProp = (prop, val) => {
+                        const desc = Object.getOwnPropertyDescriptor(self.Navigator.prototype, prop);
+                        if (desc && desc.get) {
+                            Object.defineProperty(self.Navigator.prototype, prop, {
+                                get: function() { return val; },
+                                configurable: true,
+                                enumerable: true
+                            });
+                        }
+                    };
+                    spoofProp('webdriver', false);
+                    spoofProp('hardwareConcurrency', 8);
+                    spoofProp('deviceMemory', 8);
                 }
                 
                 const sanitize = function(code) {
