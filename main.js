@@ -12,65 +12,74 @@
 (function () {
     'use strict';
 
-    const INTERNAL_BRIDGE = "__byfu_evt_bridge__";
+    // =========================================================
+    // 0. COMMUNICATION PORT (INVISIBLE TO DOM)
+    // =========================================================
+    // Replaced CustomEvent with MessageChannel memory-to-memory pipe
+    const INIT_MSG = "byfu_port_init";
+    const commChannel = new MessageChannel();
     let filtersTriggered = false;
 
     const sendLog = (type, detail) => {
-        /*_byfu_*/
         if (type === 'blocked_event' || type === 'mutation_filtered' || type === 'success') {
             filtersTriggered = true;
         }
         try {
-            const evt = new CustomEvent(INTERNAL_BRIDGE, {
-                detail: { type: type, detail: detail },
-                bubbles: false,
-                cancelable: false
-            });
-            document.dispatchEvent(evt);
+            commChannel.port1.postMessage({ type, detail });
         } catch (e) { }
     };
-
+    
+    // Handshake with relay.js using early DOM event that gets intercepted immediately
+    window.postMessage(INIT_MSG, "*", [commChannel.port2]);
     sendLog('usage_start', location.href);
+    
     window.addEventListener('load', () => {
-        /*_byfu_*/
         setTimeout(() => {
-            /*_byfu_*/
             if (!filtersTriggered) sendLog('info', 'Protection active, no fingerprinting detected.');
         }, 4000);
     });
 
+    // =========================================================
+    // 1. STACK TRACE STEALTH & PROTOTYPE DEFENSE
+    // =========================================================
+    // Minimalistic native cache strictly for internal operations 
+    const $apply = Reflect.apply;
+    const $split = String.prototype.split;
+    const $filter = Array.prototype.filter;
+    const $includes = String.prototype.includes;
+    const $join = Array.prototype.join;
+
     function scrubStack(e) {
-        /*_byfu_*/
         if (e && e.stack && typeof e.stack === 'string') {
-            e.stack = e.stack.split('\n')
-                .filter(line => !line.includes('chrome-extension://') && !line.includes('moz-extension://'))
-                .join('\n');
+            const lines = $apply($split, e.stack, ['\n']);
+            const clean = $apply($filter, lines, [line => !$apply($includes, line, ['chrome-extension://']) && !$apply($includes, line, ['moz-extension://'])]);
+            e.stack = $apply($join, clean, ['\n']);
         }
         return e;
     }
 
     // =========================================================
-    // 0. UNIVERSAL TOSTRING SPOOFER (HIGHLY OPTIMIZED)
+    // 2. UNIVERSAL TOSTRING SPOOFER (WEAKSET-BASED)
     // =========================================================
-    // This totally eliminates the need for manual tracking via WeakMaps.
-    // Any function containing the silent comment /*_byfu_*/ will automatically
-    // be spoofed as a native function when websites try to inspect it.
+    // Uses a completely hidden WeakSet to identify our functions
+    // Invisible to Object.getOwnPropertySymbols or other probes
+    const hF = new WeakSet();
     const originalToString = Function.prototype.toString;
+
     const proxiedToString = new Proxy(originalToString, {
         apply(target, thisArg, args) {
             try {
-                const source = Reflect.apply(target, thisArg, args);
-                if (source.includes('/*_byfu_*/')) {
+                if (hF.has(thisArg)) {
                     const name = thisArg.name ? thisArg.name.replace(/^(get|set)\s/, '') : '';
                     return `function ${name}() { [native code] }`;
                 }
-                return source;
+                return $apply(target, thisArg, args);
             } catch (e) {
-                // Preserve native error throwing (e.g. calling toString on null/undefined)
-                return Reflect.apply(target, thisArg, args); 
+                return $apply(target, thisArg, args); 
             }
         }
     });
+    hF.add(proxiedToString);
 
     Object.defineProperty(Function.prototype, 'toString', {
         value: proxiedToString,
@@ -79,9 +88,33 @@
         enumerable: false
     });
 
+    // Advanced Defense: Defeat V8 Raw CallSite sniffing
+    let origPrepare = Error.prepareStackTrace;
+    Object.defineProperty(Error, 'prepareStackTrace', {
+        configurable: true,
+        get() { return origPrepare; },
+        set(val) {
+            if (typeof val === 'function') {
+                origPrepare = function(err, traces) {
+                    const filtered = [];
+                    for (let i = 0; i < traces.length; i++) {
+                        const name = traces[i].getFileName();
+                        if (name && (name.includes('chrome-extension://') || name.includes('moz-extension://'))) {
+                            continue;
+                        }
+                        filtered.push(traces[i]);
+                    }
+                    return val(err, filtered);
+                };
+                hF.add(origPrepare);
+            } else {
+                origPrepare = val;
+            }
+        }
+    });
+
     // Helper to proxy getter safely
     function proxyGetter(proto, prop, fakeGetter) {
-        /*_byfu_*/
         try {
             if (!proto) return;
             const desc = Object.getOwnPropertyDescriptor(proto, prop);
@@ -90,9 +123,8 @@
 
             const proxiedGet = new Proxy(originalGet, {
                 apply(target, thisArg, args) {
-                    /*_byfu_*/
                     try {
-                        Reflect.apply(target, thisArg, args);
+                        $apply(target, thisArg, args);
                     } catch (err) {
                         throw scrubStack(err);
                     }
@@ -103,6 +135,7 @@
                     }
                 }
             });
+            hF.add(proxiedGet);
 
             Object.defineProperty(proto, prop, {
                 ...desc,
@@ -113,7 +146,6 @@
 
     // Helper to proxy function or constructor
     function proxyFunction(obj, prop, handlers) {
-        /*_byfu_*/
         try {
             if (!obj) return;
             const original = obj[prop];
@@ -122,7 +154,6 @@
             const safeHandlers = {};
             if (handlers.apply) {
                 safeHandlers.apply = function (target, thisArg, args) {
-                    /*_byfu_*/
                     try {
                         return handlers.apply(target, thisArg, args);
                     } catch (e) {
@@ -132,7 +163,6 @@
             }
             if (handlers.construct) {
                 safeHandlers.construct = function (target, args, newTarget) {
-                    /*_byfu_*/
                     try {
                         return handlers.construct(target, args, newTarget);
                     } catch (e) {
@@ -141,16 +171,18 @@
                 };
             }
 
-            obj[prop] = new Proxy(original, safeHandlers);
+            const p = new Proxy(original, safeHandlers);
+            hF.add(p);
+            obj[prop] = p;
         } catch (e) { }
     }
 
     // =========================================================
-    // 1. VISIBILITY / FOCUS
+    // 3. VISIBILITY / FOCUS
     // =========================================================
-    const falseGetter = () => { /*_byfu_*/ return false; };
-    const trueGetter = () => { /*_byfu_*/ return true; };
-    const visibleGetter = () => { /*_byfu_*/ return 'visible'; };
+    const falseGetter = () => false;
+    const trueGetter = () => true;
+    const visibleGetter = () => 'visible';
 
     proxyGetter(Document.prototype, 'hidden', falseGetter);
     proxyGetter(Document.prototype, 'visibilityState', visibleGetter);
@@ -159,14 +191,14 @@
     proxyFunction(Document.prototype, 'hasFocus', { apply: trueGetter });
 
     // =========================================================
-    // 2. FULLSCREEN – PROTOTYPE LEVEL
+    // 4. FULLSCREEN – PROTOTYPE LEVEL
     // =========================================================
-    const fsElementGetter = (target, thisArg) => { /*_byfu_*/ return thisArg.documentElement || thisArg.body; };
+    const fsElementGetter = (target, thisArg) => thisArg.documentElement || thisArg.body;
     ['fullscreenElement', 'webkitFullscreenElement', 'mozFullScreenElement', 'msFullscreenElement'].forEach(p => proxyGetter(Document.prototype, p, fsElementGetter));
     ['fullscreenEnabled', 'webkitFullscreenEnabled', 'mozFullScreenEnabled', 'msFullscreenEnabled'].forEach(p => proxyGetter(Document.prototype, p, trueGetter));
     ['webkitIsFullScreen', 'mozFullScreen'].forEach(p => proxyGetter(Document.prototype, p, trueGetter));
 
-    const promiseResolver = () => { /*_byfu_*/ return Promise.resolve(); };
+    const promiseResolver = () => Promise.resolve();
     ['requestFullscreen', 'webkitRequestFullscreen', 'mozRequestFullScreen', 'msRequestFullscreen'].forEach(name => {
         proxyFunction(Element.prototype, name, { apply: promiseResolver });
     });
@@ -175,20 +207,19 @@
     });
 
     // =========================================================
-    // 3. HARDWARE & WEBDRIVER FINGERPRINT SPOOFING
+    // 5. HARDWARE & WEBDRIVER FINGERPRINT SPOOFING
     // =========================================================
     proxyGetter(Navigator.prototype, 'webdriver', falseGetter);
-    const eightGetter = () => { /*_byfu_*/ return 8; };
+    const eightGetter = () => 8;
     proxyGetter(Navigator.prototype, 'hardwareConcurrency', eightGetter); 
     proxyGetter(Navigator.prototype, 'deviceMemory', eightGetter); 
 
     const spoofWebGLParameter = {
         apply(target, thisArg, args) {
-            /*_byfu_*/
             const param = args[0];
             if (param === 37445) return 'Google Inc. (Apple)';
             if (param === 37446) return 'ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)';
-            return Reflect.apply(target, thisArg, args);
+            return $apply(target, thisArg, args);
         }
     };
 
@@ -200,12 +231,11 @@
     }
 
     // =========================================================
-    // 4. CANVAS FINGERPRINT PROTECTION
+    // 6. CANVAS FINGERPRINT PROTECTION
     // =========================================================
     const taintedCanvases = new WeakSet();
 
     function applyCanvasNoise(canvas) {
-        /*_byfu_*/
         if (!canvas || canvas.width <= 16 || canvas.height <= 16 || taintedCanvases.has(canvas)) return;
         try {
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -223,23 +253,21 @@
     ['toDataURL', 'toBlob'].forEach(method => {
         proxyFunction(HTMLCanvasElement.prototype, method, {
             apply(target, thisArg, args) {
-                /*_byfu_*/
                 applyCanvasNoise(thisArg);
-                return Reflect.apply(target, thisArg, args);
+                return $apply(target, thisArg, args);
             }
         });
     });
 
     proxyFunction(CanvasRenderingContext2D.prototype, 'getImageData', {
         apply(target, thisArg, args) {
-            /*_byfu_*/
             if (thisArg && thisArg.canvas) applyCanvasNoise(thisArg.canvas);
-            return Reflect.apply(target, thisArg, args);
+            return $apply(target, thisArg, args);
         }
     });
 
     // =========================================================
-    // 5. EVENT SYSTEM & LMS BYPASS
+    // 7. EVENT SYSTEM & LMS BYPASS
     // =========================================================
     const blockedEvents = new Set([
         'visibilitychange', 'webkitvisibilitychange', 'mozvisibilitychange', 'msvisibilitychange',
@@ -252,7 +280,6 @@
 
     const addEventListenerHandler = {
         apply(target, thisArg, args) {
-            /*_byfu_*/
             const type = args[0];
             const listener = args[1];
 
@@ -269,18 +296,16 @@
                     let wrapped = listenerWrapperMap.get(listener);
                     if (!wrapped) {
                         wrapped = function (event) {
-                            /*_byfu_*/
                             if (event && event.isTrusted) {
                                 sendLog('blocked_event', type);
                                 return; 
                             }
-                            return Reflect.apply(callback, thisArg, arguments);
+                            return $apply(callback, thisArg, arguments);
                         };
 
                         if (isObj) {
                             wrapped = new Proxy(listener, {
                                 get(t, p) {
-                                    /*_byfu_*/
                                     if (p === 'handleEvent') return wrapped;
                                     return Reflect.get(t, p);
                                 }
@@ -291,7 +316,7 @@
                     args[1] = wrapped;
                 }
             }
-            return Reflect.apply(target, thisArg, args);
+            return $apply(target, thisArg, args);
         }
     };
 
@@ -299,7 +324,6 @@
 
     proxyFunction(EventTarget.prototype, 'removeEventListener', {
         apply(target, thisArg, args) {
-            /*_byfu_*/
             const type = args[0];
             const listener = args[1];
 
@@ -309,7 +333,7 @@
                     args[1] = wrapped;
                 }
             }
-            return Reflect.apply(target, thisArg, args);
+            return $apply(target, thisArg, args);
         }
     });
 
@@ -317,7 +341,6 @@
     blockedEvents.forEach(type => {
         const prop = 'on' + type;
         const hookOnProp = (proto) => {
-            /*_byfu_*/
             try {
                 if (!proto) return;
                 const desc = Object.getOwnPropertyDescriptor(proto, prop);
@@ -328,16 +351,15 @@
 
                 const proxiedGet = new Proxy(origGet, {
                     apply(target, thisArg, args) {
-                        /*_byfu_*/
                         const map = onPropMap.get(thisArg);
                         if (map && prop in map) return map[prop];
-                        return Reflect.apply(target, thisArg, args);
+                        return $apply(target, thisArg, args);
                     }
                 });
+                hF.add(proxiedGet);
 
                 const proxiedSet = new Proxy(origSet, {
                     apply(target, thisArg, args) {
-                        /*_byfu_*/
                         const rawListener = args[0];
                         let map = onPropMap.get(thisArg);
                         if (!map) {
@@ -348,19 +370,19 @@
 
                         if (typeof rawListener === 'function') {
                             const wrapped = function (event) {
-                                /*_byfu_*/
                                 if (event && event.isTrusted) {
                                     sendLog('blocked_event', type);
                                     return;
                                 }
-                                return Reflect.apply(rawListener, thisArg, arguments);
+                                return $apply(rawListener, thisArg, arguments);
                             };
                             args[0] = wrapped;
                         }
 
-                        return Reflect.apply(target, thisArg, args);
+                        return $apply(target, thisArg, args);
                     }
                 });
+                hF.add(proxiedSet);
 
                 Object.defineProperty(proto, prop, {
                     ...desc,
@@ -379,22 +401,20 @@
     const lmsProtectedEvents = new Set(['copy', 'paste', 'cut', 'contextmenu', 'selectstart', 'dragstart']);
     proxyFunction(Event.prototype, 'preventDefault', {
         apply(target, thisArg, args) {
-            /*_byfu_*/
             if (thisArg && typeof thisArg.type === 'string' && lmsProtectedEvents.has(thisArg.type.toLowerCase())) {
                 if (thisArg.isTrusted) {
                     sendLog('success', `Bypassed LMS restriction on ${thisArg.type}`);
                     return; 
                 }
             }
-            return Reflect.apply(target, thisArg, args);
+            return $apply(target, thisArg, args);
         }
     });
 
     // =========================================================
-    // 6. ANTI-DEBUGGER NEUTRALIZATION
+    // 8. ANTI-DEBUGGER NEUTRALIZATION
     // =========================================================
     function sanitizeCode(code) {
-        /*_byfu_*/
         if (typeof code !== 'string') return code;
         if (code.includes('debugger')) {
             sendLog('error', 'Anti-debugger statement neutralized');
@@ -404,15 +424,13 @@
     }
 
     const codeSanitizerApply = (target, thisArg, args) => {
-        /*_byfu_*/
         if (args.length > 0) {
             args = Array.from(args).map(arg => typeof arg === 'string' ? sanitizeCode(arg) : arg);
         }
-        return Reflect.apply(target, thisArg, args);
+        return $apply(target, thisArg, args);
     };
     
     const codeSanitizerConstruct = (target, args, newTarget) => {
-        /*_byfu_*/
         if (args.length > 0) {
             args = Array.from(args).map(arg => typeof arg === 'string' ? sanitizeCode(arg) : arg);
         }
@@ -433,12 +451,11 @@
     proxyFunction(window, 'setTimeout', { apply: codeSanitizerApply });
 
     // =========================================================
-    // 7. IFRAME PROTECTION
+    // 9. IFRAME PROTECTION
     // =========================================================
     const processedWindows = new WeakSet();
 
     function hardenWindow(win) {
-        /*_byfu_*/
         if (!win || processedWindows.has(win)) return;
         processedWindows.add(win);
         try {
@@ -469,11 +486,10 @@
             if (win.Event && win.Event.prototype) {
                 proxyFunction(win.Event.prototype, 'preventDefault', {
                     apply(target, thisArg, args) {
-                        /*_byfu_*/
                         if (thisArg && typeof thisArg.type === 'string' && lmsProtectedEvents.has(thisArg.type.toLowerCase()) && thisArg.isTrusted) {
                             return;
                         }
-                        return Reflect.apply(target, thisArg, args);
+                        return $apply(target, thisArg, args);
                     }
                 });
             }
@@ -487,28 +503,25 @@
     }
 
     proxyGetter(HTMLIFrameElement.prototype, 'contentWindow', (target, thisArg, args) => {
-        /*_byfu_*/
-        const win = Reflect.apply(target, thisArg, args);
+        const win = $apply(target, thisArg, args);
         if (win) hardenWindow(win);
         return win;
     });
 
     proxyGetter(HTMLIFrameElement.prototype, 'contentDocument', (target, thisArg, args) => {
-        /*_byfu_*/
-        const doc = Reflect.apply(target, thisArg, args);
+        const doc = $apply(target, thisArg, args);
         if (doc && doc.defaultView) hardenWindow(doc.defaultView);
         return doc;
     });
 
     document.querySelectorAll('iframe').forEach(iframe => {
-        /*_byfu_*/
         try {
             if (iframe.contentWindow) hardenWindow(iframe.contentWindow);
         } catch (e) { }
     });
 
     // =========================================================
-    // 8. WEB WORKER INJECTION
+    // 10. WEB WORKER INJECTION
     // =========================================================
     const workerCore = `
         (function() {
@@ -563,7 +576,6 @@
 
     proxyFunction(window, 'Worker', {
         construct(target, args, newTarget) {
-            /*_byfu_*/
             try {
                 const scriptUrl = args[0];
                 const options = args[1] || {};
