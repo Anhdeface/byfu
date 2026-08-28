@@ -1,9 +1,8 @@
-// Use camouflage string that mimics a highly common, benign extension (React DevTools)
-const INIT_MSG = "__react_devtools_init__";
+const INIT_MSG_PREFIX = "byfu_port_";
 
 window.addEventListener("message", function initListener(e) {
-  // Only accept initialization from our own window
-  if (e.source === window && e.data === INIT_MSG && e.ports && e.ports[0]) {
+  // Use a randomized prefix to avoid static string signatures or honeypots
+  if (e.source === window && typeof e.data === 'string' && e.data.startsWith(INIT_MSG_PREFIX) && e.ports && e.ports[0]) {
     // Hide this initialization event from the target page completely
     e.stopImmediatePropagation();
     window.removeEventListener("message", initListener, true);

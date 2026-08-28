@@ -15,8 +15,8 @@
     // =========================================================
     // 0. COMMUNICATION PORT (INVISIBLE TO DOM)
     // =========================================================
-    // Camouflage initialization message to mimic React DevTools
-    const INIT_MSG = "__react_devtools_init__";
+    // Use a completely randomized initialization string to prevent honeypot detection
+    const INIT_MSG = "byfu_port_" + Math.random().toString(36).substring(2);
     const commChannel = new MessageChannel();
     let filtersTriggered = false;
 
@@ -232,6 +232,9 @@
     // =========================================================
     const taintedCanvases = new WeakSet();
 
+    // Session salt generated once per page load to ensure noise is unique per session but deterministic per canvas
+    const SESSION_SALT = Math.random();
+
     function applyCanvasNoise(canvas) {
         if (!canvas || canvas.width <= 16 || canvas.height <= 16 || taintedCanvases.has(canvas)) return;
         try {
@@ -239,13 +242,18 @@
             if (ctx) {
                 taintedCanvases.add(canvas);
                 
-                // Randomize coordinates and colors per canvas instance to prevent algorithmic fingerprinting
-                const rX = Math.floor(Math.random() * (canvas.width - 1));
-                const rY = Math.floor(Math.random() * (canvas.height - 1));
-                const r = Math.floor(Math.random() * 20);
-                const g = Math.floor(Math.random() * 20);
-                const b = Math.floor(Math.random() * 20);
-                const a = (Math.random() * 0.003 + 0.001).toFixed(4);
+                // Deterministic pseudo-random based on dimensions and session salt.
+                // Guarantees that identical canvases (e.g. during an anti-cheat's double-hash check)
+                // get the EXACT same noise overlay, producing identical hashes, thus defeating spoofer detection.
+                const seed1 = (canvas.width * 13) * SESSION_SALT;
+                const seed2 = (canvas.height * 7) * SESSION_SALT;
+                
+                const rX = Math.floor(seed1 % Math.max(1, canvas.width - 1));
+                const rY = Math.floor(seed2 % Math.max(1, canvas.height - 1));
+                const r = Math.floor((seed1 * 3) % 20);
+                const g = Math.floor((seed2 * 5) % 20);
+                const b = Math.floor((seed1 + seed2) % 20);
+                const a = ((seed1 % 3) * 0.001 + 0.001).toFixed(4);
                 
                 ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
                 ctx.fillRect(rX, rY, 1, 1);
@@ -606,51 +614,14 @@
                             sendLog('info', 'Worker anti-detection active (Data URL)');
                             return worker2;
                         } catch (cspErr2) {
-                            // Strict CSP fallback: Wrap the naked worker to sanitize outgoing telemetry
-                            args[0] = absoluteUrl;
-                            const nakedWorker = Reflect.construct(target, args, newTarget);
-                            
-                            const wrappedWorker = new Proxy(nakedWorker, {
-                                get(t, p) {
-                                    if (p === 'addEventListener') {
-                                        return function(type, listener, opts) {
-                                            if (type === 'message' && typeof listener === 'function') {
-                                                const safeListener = function(e) {
-                                                    if (e.data && typeof e.data === 'object') {
-                                                        if (e.data.hardwareConcurrency) e.data.hardwareConcurrency = 8;
-                                                        if (e.data.deviceMemory) e.data.deviceMemory = 8;
-                                                    }
-                                                    return $apply(listener, this, arguments);
-                                                };
-                                                hF.add(safeListener);
-                                                return $apply(t.addEventListener, t, [type, safeListener, opts]);
-                                            }
-                                            return $apply(t.addEventListener, t, arguments);
-                                        };
-                                    }
-                                    if (p === 'onmessage') return t.onmessage;
-                                    return typeof t[p] === 'function' ? t[p].bind(t) : t[p];
-                                },
-                                set(t, p, val) {
-                                    if (p === 'onmessage' && typeof val === 'function') {
-                                        const safeListener = function(e) {
-                                            if (e.data && typeof e.data === 'object') {
-                                                if (e.data.hardwareConcurrency) e.data.hardwareConcurrency = 8;
-                                                if (e.data.deviceMemory) e.data.deviceMemory = 8;
-                                            }
-                                            return $apply(val, this, arguments);
-                                        };
-                                        hF.add(safeListener);
-                                        t.onmessage = safeListener;
-                                        return true;
-                                    }
-                                    t[p] = val;
-                                    return true;
-                                }
-                            });
-                            hF.add(wrappedWorker);
-                            sendLog('warning', 'Strict CSP blocked payload. Worker telemetry proxied instead.');
-                            return wrappedWorker;
+                            // If Strict CSP blocks both Blob and Data URLs, DO NOT expose a naked worker.
+                            // A naked worker runs native code without our proxies and could easily exfiltrate
+                            // real hardware/fingerprint data directly to the server via its own fetch() or XHR,
+                            // completely bypassing our postMessage proxy.
+                            // Throwing an error forces the anti-cheat to fallback to main-thread fingerprinting,
+                            // which is fully protected by our existing hooks.
+                            sendLog('warning', 'Strict CSP blocked protected worker. Creation aborted to prevent data leak via fetch().');
+                            throw new Error("Worker creation blocked by CSP");
                         }
                     }
                 }
