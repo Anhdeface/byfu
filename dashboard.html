@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Byfu Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body class="dashboard">
+  <div class="container dash-container">
+    <div class="window-controls">
+      <button class="mac-btn close" id="closeBtn" title="Close"></button>
+      <button class="mac-btn maximize" id="maxBtn" title="Maximize"></button>
+    </div>
+
+    <div class="header" style="margin-top: 10px;">
+      <div class="logo">
+        <img src="img/logo.png" alt="Logo" class="custom-logo-dash">
+        <div class="logo-text">
+          <img src="img/byfu.png" alt="Byfu" class="custom-logo-text-dash">
+        </div>
+      </div>
+      <div class="status-indicator" id="statusIndicator">
+        <div class="status-dot"></div>
+        <span id="statusText">Active</span>
+      </div>
+    </div>
+    
+    <!-- Main Card -->
+    <div class="card main-card">
+      <div class="info">
+        <h3 style="font-size: 18px;">Anti-Detect Filter</h3>
+        <p style="font-size: 14px; max-width: 320px; line-height: 1.5;">Masks fingerprinting vectors dynamically across all sites.</p>
+      </div>
+      <div class="toggle-container">
+        <label class="switch" style="transform: scale(1.15);">
+          <input type="checkbox" id="toggleSwitch">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value" id="statUsage">0</div>
+        <div class="stat-label">Pages Protected</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="statBlocked">0</div>
+        <div class="stat-label">Filters Applied</div>
+      </div>
+    </div>
+
+    <!-- Contact Section -->
+    <div class="contact-section">
+      <h3 style="margin: 0 0 10px 0; font-size: 14px; color: var(--text-muted); font-weight: 500;">Contact Founder</h3>
+      <div class="contact-links">
+        <a href="https://t.me/evilst" target="_blank" class="contact-btn">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.04-.01.12-.02.16z"/></svg>
+          Telegram: @evilst
+        </a>
+      </div>
+    </div>
+
+    <div class="footer" style="margin-top: 20px;">
+      <p>Version 6.0.0 • by evilst</p>
+    </div>
+  </div>
+  <script src="dashboard.js"></script>
+</body>
+</html>

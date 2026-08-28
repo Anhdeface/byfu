@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "byfu",
+  "version": "6.0.0",
+  "description": "own evilst - Standalone Extension",
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "img/logo.png",
+      "32": "img/logo.png",
+      "48": "img/logo.png",
+      "128": "img/logo.png"
+    }
+  },
+  "icons": {
+    "16": "img/logo.png",
+    "32": "img/logo.png",
+    "48": "img/logo.png",
+    "128": "img/logo.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}
