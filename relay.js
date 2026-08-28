@@ -1,4 +1,5 @@
-const INIT_MSG = "byfu_port_init";
+// Use camouflage string that mimics a highly common, benign extension (React DevTools)
+const INIT_MSG = "__react_devtools_init__";
 
 window.addEventListener("message", function initListener(e) {
   // Only accept initialization from our own window

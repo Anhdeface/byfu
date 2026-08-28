@@ -15,8 +15,8 @@
     // =========================================================
     // 0. COMMUNICATION PORT (INVISIBLE TO DOM)
     // =========================================================
-    // Replaced CustomEvent with MessageChannel memory-to-memory pipe
-    const INIT_MSG = "byfu_port_init";
+    // Camouflage initialization message to mimic React DevTools
+    const INIT_MSG = "__react_devtools_init__";
     const commChannel = new MessageChannel();
     let filtersTriggered = false;
 
@@ -29,7 +29,6 @@
         } catch (e) { }
     };
     
-    // Handshake with relay.js using early DOM event that gets intercepted immediately
     window.postMessage(INIT_MSG, "*", [commChannel.port2]);
     sendLog('usage_start', location.href);
     
@@ -42,7 +41,6 @@
     // =========================================================
     // 1. STACK TRACE STEALTH & PROTOTYPE DEFENSE
     // =========================================================
-    // Minimalistic native cache strictly for internal operations 
     const $apply = Reflect.apply;
     const $split = String.prototype.split;
     const $filter = Array.prototype.filter;
@@ -61,8 +59,6 @@
     // =========================================================
     // 2. UNIVERSAL TOSTRING SPOOFER (WEAKSET-BASED)
     // =========================================================
-    // Uses a completely hidden WeakSet to identify our functions
-    // Invisible to Object.getOwnPropertySymbols or other probes
     const hF = new WeakSet();
     const originalToString = Function.prototype.toString;
 
@@ -88,14 +84,17 @@
         enumerable: false
     });
 
-    // Advanced Defense: Defeat V8 Raw CallSite sniffing
-    let origPrepare = Error.prepareStackTrace;
+    // Advanced Defense: Defeat V8 Raw CallSite sniffing WITHOUT breaking page logic (e.g. Sentry)
+    let pagePrepareStackTrace = undefined;
     Object.defineProperty(Error, 'prepareStackTrace', {
         configurable: true,
-        get() { return origPrepare; },
+        enumerable: false,
+        get() {
+            return pagePrepareStackTrace; // Return the hooked version or undefined
+        },
         set(val) {
             if (typeof val === 'function') {
-                origPrepare = function(err, traces) {
+                pagePrepareStackTrace = function(err, traces) {
                     const filtered = [];
                     for (let i = 0; i < traces.length; i++) {
                         const name = traces[i].getFileName();
@@ -104,16 +103,15 @@
                         }
                         filtered.push(traces[i]);
                     }
-                    return val(err, filtered);
+                    return val(err, filtered); // Pass clean traces to the page's tool (like Sentry)
                 };
-                hF.add(origPrepare);
+                hF.add(pagePrepareStackTrace);
             } else {
-                origPrepare = val;
+                pagePrepareStackTrace = val;
             }
         }
     });
 
-    // Helper to proxy getter safely
     function proxyGetter(proto, prop, fakeGetter) {
         try {
             if (!proto) return;
@@ -144,7 +142,6 @@
         } catch (e) { }
     }
 
-    // Helper to proxy function or constructor
     function proxyFunction(obj, prop, handlers) {
         try {
             if (!obj) return;
@@ -231,7 +228,7 @@
     }
 
     // =========================================================
-    // 6. CANVAS FINGERPRINT PROTECTION
+    // 6. CANVAS FINGERPRINT PROTECTION (NON-DETERMINISTIC)
     // =========================================================
     const taintedCanvases = new WeakSet();
 
@@ -241,11 +238,18 @@
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
             if (ctx) {
                 taintedCanvases.add(canvas);
-                const x = (canvas.width * 7) % Math.max(1, canvas.width - 1);
-                const y = (canvas.height * 13) % Math.max(1, canvas.height - 1);
-                ctx.fillStyle = 'rgba(0,0,0,0.004)';
-                ctx.fillRect(x, y, 1, 1);
-                sendLog('success', 'Canvas fingerprint protected');
+                
+                // Randomize coordinates and colors per canvas instance to prevent algorithmic fingerprinting
+                const rX = Math.floor(Math.random() * (canvas.width - 1));
+                const rY = Math.floor(Math.random() * (canvas.height - 1));
+                const r = Math.floor(Math.random() * 20);
+                const g = Math.floor(Math.random() * 20);
+                const b = Math.floor(Math.random() * 20);
+                const a = (Math.random() * 0.003 + 0.001).toFixed(4);
+                
+                ctx.fillStyle = `rgba(${r},${g},${b},${a})`;
+                ctx.fillRect(rX, rY, 1, 1);
+                sendLog('success', 'Canvas fingerprint dynamically protected');
             }
         } catch (e) { }
     }
@@ -418,7 +422,7 @@
         if (typeof code !== 'string') return code;
         if (code.includes('debugger')) {
             sendLog('error', 'Anti-debugger statement neutralized');
-            return code.replace(/\bdebugger\b\s*;?/g, '/*noop*/;');
+            return code.replace(/\\bdebugger\\b\\s*;?/g, '/*noop*/;');
         }
         return code;
     }
@@ -521,7 +525,7 @@
     });
 
     // =========================================================
-    // 10. WEB WORKER INJECTION
+    // 10. WEB WORKER INJECTION & CSP FALLBACK PROXY
     // =========================================================
     const workerCore = `
         (function() {
@@ -582,24 +586,72 @@
 
                 if (typeof scriptUrl === 'string' || scriptUrl instanceof URL) {
                     const absoluteUrl = new URL(scriptUrl, location.href).href;
-                    let payload;
-
-                    if (options.type === 'module') {
-                        payload = workerCore + '\nawait import("' + absoluteUrl + '");';
-                    } else {
-                        payload = workerCore + '\nimportScripts("' + absoluteUrl + '");';
-                    }
+                    let payload = options.type === 'module' 
+                        ? workerCore + '\nawait import("' + absoluteUrl + '");'
+                        : workerCore + '\nimportScripts("' + absoluteUrl + '");';
 
                     const blob = new Blob([payload], { type: 'application/javascript' });
                     const blobUrl = URL.createObjectURL(blob);
-                    const originalUrl = args[0];
-                    args[0] = blobUrl;
+                    
                     try {
+                        args[0] = blobUrl;
                         const worker = Reflect.construct(target, args, newTarget);
                         sendLog('info', 'Worker anti-detection active');
                         return worker;
                     } catch (cspErr) {
-                        args[0] = originalUrl;
+                        try {
+                            const dataUrl = 'data:application/javascript;charset=utf-8,' + encodeURIComponent(payload);
+                            args[0] = dataUrl;
+                            const worker2 = Reflect.construct(target, args, newTarget);
+                            sendLog('info', 'Worker anti-detection active (Data URL)');
+                            return worker2;
+                        } catch (cspErr2) {
+                            // Strict CSP fallback: Wrap the naked worker to sanitize outgoing telemetry
+                            args[0] = absoluteUrl;
+                            const nakedWorker = Reflect.construct(target, args, newTarget);
+                            
+                            const wrappedWorker = new Proxy(nakedWorker, {
+                                get(t, p) {
+                                    if (p === 'addEventListener') {
+                                        return function(type, listener, opts) {
+                                            if (type === 'message' && typeof listener === 'function') {
+                                                const safeListener = function(e) {
+                                                    if (e.data && typeof e.data === 'object') {
+                                                        if (e.data.hardwareConcurrency) e.data.hardwareConcurrency = 8;
+                                                        if (e.data.deviceMemory) e.data.deviceMemory = 8;
+                                                    }
+                                                    return $apply(listener, this, arguments);
+                                                };
+                                                hF.add(safeListener);
+                                                return $apply(t.addEventListener, t, [type, safeListener, opts]);
+                                            }
+                                            return $apply(t.addEventListener, t, arguments);
+                                        };
+                                    }
+                                    if (p === 'onmessage') return t.onmessage;
+                                    return typeof t[p] === 'function' ? t[p].bind(t) : t[p];
+                                },
+                                set(t, p, val) {
+                                    if (p === 'onmessage' && typeof val === 'function') {
+                                        const safeListener = function(e) {
+                                            if (e.data && typeof e.data === 'object') {
+                                                if (e.data.hardwareConcurrency) e.data.hardwareConcurrency = 8;
+                                                if (e.data.deviceMemory) e.data.deviceMemory = 8;
+                                            }
+                                            return $apply(val, this, arguments);
+                                        };
+                                        hF.add(safeListener);
+                                        t.onmessage = safeListener;
+                                        return true;
+                                    }
+                                    t[p] = val;
+                                    return true;
+                                }
+                            });
+                            hF.add(wrappedWorker);
+                            sendLog('warning', 'Strict CSP blocked payload. Worker telemetry proxied instead.');
+                            return wrappedWorker;
+                        }
                     }
                 }
             } catch (e) { }
