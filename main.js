@@ -207,11 +207,12 @@
     });
 
     // =========================================================
-    // 7. LMS INTERACTION CONTROLS
+    // 7. LMS INTERACTION ENGINE
     // =========================================================
-    // Restore normal browser interactions commonly restricted by LMS pages:
-    // context menu, text selection, clipboard events, drag start, and
-    // Ctrl/Cmd+C/X/V. Only the relevant event types are affected.
+    // Restore browser interactions commonly restricted by LMS pages:
+    // context menu, text selection, clipboard, and drag. The engine
+    // deliberately scopes its behavior to those interaction paths.
+
     const lmsEvents = new Set([
         'copy',
         'paste',
@@ -220,6 +221,10 @@
         'selectstart',
         'dragstart'
     ]);
+
+    const lmsShortcuts = new Set(['c', 'x', 'v', 'a']);
+
+    const protectedMouseButtons = new Set([2]);
 
     const isLmsShortcut = (event) => {
         if (!event || event.type !== 'keydown') return false;
@@ -231,14 +236,28 @@
             ? event.key.toLowerCase()
             : '';
 
-        return key === 'c' || key === 'x' || key === 'v';
+        if (lmsShortcuts.has(key)) return true;
+
+        // Shift+F10 and the dedicated Context Menu key request the
+        // same browser context-menu action as a right click.
+        return event.shiftKey && key === 'f10' || key === 'contextmenu';
     };
 
     const isLmsProtectedEvent = (event) => {
         if (!event || typeof event.type !== 'string') return false;
 
         const type = event.type.toLowerCase();
-        return lmsEvents.has(type) || isLmsShortcut(event);
+
+        if (lmsEvents.has(type) || isLmsShortcut(event)) {
+            return true;
+        }
+
+        if ((type === 'mousedown' || type === 'mouseup') &&
+            protectedMouseButtons.has(event.button)) {
+            return true;
+        }
+
+        return false;
     };
 
     proxyFunction(Event.prototype, 'preventDefault', {
@@ -252,7 +271,7 @@
         }
     });
 
-    // Some pages use event.returnValue = false instead of preventDefault().
+    // Some LMS implementations use event.returnValue = false instead.
     try {
         const returnValue = Object.getOwnPropertyDescriptor(Event.prototype, 'returnValue');
 
@@ -281,7 +300,18 @@
         }
     } catch (error) { }
 
-    // Inline handlers can cancel context menu/selection by returning false.
+    // Inline handlers can cancel context menus, selection, drag, or
+    // clipboard through "return false". Normalize them as they appear.
+    const inlineLmsHandlers = [
+        'oncopy',
+        'onpaste',
+        'oncut',
+        'oncontextmenu',
+        'onselectstart',
+        'ondragstart',
+        'onkeydown'
+    ];
+
     function hookLmsInlineHandler(proto, prop) {
         try {
             const descriptor = proto && Object.getOwnPropertyDescriptor(proto, prop);
@@ -312,7 +342,9 @@
                     const wrapped = function (event) {
                         const result = $apply(raw, this, arguments);
 
-                        if (runtimeEnabled && result === false && isLmsProtectedEvent(event)) {
+                        if (runtimeEnabled &&
+                            result === false &&
+                            isLmsProtectedEvent(event)) {
                             sendLog('lms_unlock', `${event.type}:inline`);
                             return true;
                         }
@@ -333,22 +365,142 @@
         } catch (error) { }
     }
 
-    const inlineLmsHandlers = [
-        'oncopy',
-        'onpaste',
-        'oncut',
-        'oncontextmenu',
-        'onselectstart',
-        'ondragstart',
-        'onkeydown'
+    const lmsWindowProto = typeof Window !== 'undefined' ? Window.prototype : null;
+    const lmsPrototypes = [
+        lmsWindowProto,
+        typeof Document !== 'undefined' ? Document.prototype : null,
+        typeof HTMLElement !== 'undefined' ? HTMLElement.prototype : null,
+        typeof SVGElement !== 'undefined' ? SVGElement.prototype : null
     ];
 
-    const lmsWindowProto = typeof Window !== 'undefined' ? Window.prototype : null;
-
-    for (const proto of [lmsWindowProto, Document.prototype, HTMLElement.prototype]) {
+    for (const proto of lmsPrototypes) {
         for (const prop of inlineLmsHandlers) {
             hookLmsInlineHandler(proto, prop);
         }
+    }
+
+    // CSS can disable selection/drag independently of JavaScript events.
+    // Unlock only the ancestor chain involved in the current gesture rather
+    // than forcing a global "* { user-select: text !important; }" rule.
+    const unlockedSelection = new WeakSet();
+
+    function unlockInteractionStyle(element) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) return;
+
+        let node = element;
+        let depth = 0;
+
+        while (node && node !== document.documentElement && depth++ < 32) {
+            try {
+                if (!unlockedSelection.has(node)) {
+                    const style = getComputedStyle(node);
+
+                    if (style.userSelect === 'none' ||
+                        style.webkitUserSelect === 'none') {
+                        node.style.setProperty('user-select', 'text', 'important');
+                        node.style.setProperty('-webkit-user-select', 'text', 'important');
+                        unlockedSelection.add(node);
+                    }
+
+                    if (style.webkitUserDrag === 'none') {
+                        node.style.setProperty('-webkit-user-drag', 'auto', 'important');
+                    }
+                }
+            } catch (error) { }
+
+            node = node.parentElement;
+        }
+    }
+
+    function prepareLmsGesture(event) {
+        if (!runtimeEnabled || !event) return;
+
+        const target = event.target;
+        if (!target || target.nodeType !== Node.ELEMENT_NODE) return;
+
+        if (event.button === 0 ||
+            event.type === 'pointerdown' ||
+            event.type === 'mousedown') {
+            unlockInteractionStyle(target);
+        }
+    }
+
+    // Prepare selection/drag before the browser commits the gesture.
+    window.addEventListener('pointerdown', prepareLmsGesture, true);
+    window.addEventListener('mousedown', prepareLmsGesture, true);
+
+    // Keep dynamically inserted inline handlers inside the same engine.
+    if (typeof MutationObserver !== 'undefined') {
+        const observer = new MutationObserver((records) => {
+            if (!runtimeEnabled) return;
+
+            for (const record of records) {
+                if (record.type === 'attributes') {
+                    const target = record.target;
+
+                    for (const prop of inlineLmsHandlers) {
+                        const attribute = prop.toLowerCase();
+                        if (attribute in target) {
+                            try {
+                                const handler = target[prop];
+                                if (typeof handler === 'function') {
+                                    target[prop] = handler;
+                                }
+                            } catch (error) { }
+                        }
+                    }
+
+                    continue;
+                }
+
+                for (const node of record.addedNodes) {
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+                    for (const prop of inlineLmsHandlers) {
+                        try {
+                            const handler = node[prop];
+                            if (typeof handler === 'function') {
+                                node[prop] = handler;
+                            }
+                        } catch (error) { }
+                    }
+
+                    if (node.querySelectorAll) {
+                        const descendants = node.querySelectorAll(
+                            inlineLmsHandlers.map(prop => prop.slice(2)).map(type => `[on${type}]`).join(',')
+                        );
+
+                        for (const child of descendants) {
+                            for (const prop of inlineLmsHandlers) {
+                                try {
+                                    const handler = child[prop];
+                                    if (typeof handler === 'function') {
+                                        child[prop] = handler;
+                                    }
+                                } catch (error) { }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        try {
+            observer.observe(document.documentElement || document, {
+                subtree: true,
+                childList: true,
+                attributes: true,
+                attributeFilter: [
+                    'oncopy',
+                    'onpaste',
+                    'oncut',
+                    'oncontextmenu',
+                    'onselectstart',
+                    'ondragstart',
+                    'onkeydown'
+                ]
+            });
+        } catch (error) { }
     }
 
 })();
