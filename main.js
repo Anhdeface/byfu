@@ -25,9 +25,6 @@
 
     const sendLog = (type, detail) => {
         if (!runtimeStateReady || !runtimeEnabled) return;
-        if (type === 'blocked_event' || type === 'mutation_filtered' || type === 'success') {
-            filtersTriggered = true;
-        }
         try {
             commChannel.port1.postMessage({ type, detail });
         } catch (e) { }
@@ -210,16 +207,148 @@
     });
 
     // =========================================================
-    // 7. EVENT OBSERVATION
+    // 7. LMS INTERACTION CONTROLS
     // =========================================================
-    // Keep event handling native. We only observe a small set of lifecycle
-    // events for diagnostics; no listeners are blocked or rewritten.
-    const observedEvents = ['visibilitychange', 'blur', 'focusout'];
+    // Restore normal browser interactions commonly restricted by LMS pages:
+    // context menu, text selection, clipboard events, drag start, and
+    // Ctrl/Cmd+C/X/V. Only the relevant event types are affected.
+    const lmsEvents = new Set([
+        'copy',
+        'paste',
+        'cut',
+        'contextmenu',
+        'selectstart',
+        'dragstart'
+    ]);
 
-    for (const type of observedEvents) {
-        window.addEventListener(type, () => {
-            if (runtimeEnabled) sendLog('info', `event:${type}`);
-        }, { passive: true });
+    const isLmsShortcut = (event) => {
+        if (!event || event.type !== 'keydown') return false;
+
+        const modifier = event.ctrlKey || event.metaKey;
+        if (!modifier) return false;
+
+        const key = typeof event.key === 'string'
+            ? event.key.toLowerCase()
+            : '';
+
+        return key === 'c' || key === 'x' || key === 'v';
+    };
+
+    const isLmsProtectedEvent = (event) => {
+        if (!event || typeof event.type !== 'string') return false;
+
+        const type = event.type.toLowerCase();
+        return lmsEvents.has(type) || isLmsShortcut(event);
+    };
+
+    proxyFunction(Event.prototype, 'preventDefault', {
+        apply(target, thisArg, args) {
+            if (runtimeEnabled && isLmsProtectedEvent(thisArg)) {
+                sendLog('lms_unlock', thisArg.type);
+                return;
+            }
+
+            return $apply(target, thisArg, args);
+        }
+    });
+
+    // Some pages use event.returnValue = false instead of preventDefault().
+    try {
+        const returnValue = Object.getOwnPropertyDescriptor(Event.prototype, 'returnValue');
+
+        if (returnValue && typeof returnValue.set === 'function') {
+            const originalSet = returnValue.set;
+
+            const wrappedSet = new Proxy(originalSet, {
+                apply(target, thisArg, args) {
+                    if (
+                        runtimeEnabled &&
+                        args[0] === false &&
+                        isLmsProtectedEvent(thisArg)
+                    ) {
+                        sendLog('lms_unlock', `${thisArg.type}:returnValue`);
+                        return;
+                    }
+
+                    return $apply(target, thisArg, args);
+                }
+            });
+
+            Object.defineProperty(Event.prototype, 'returnValue', {
+                ...returnValue,
+                set: wrappedSet
+            });
+        }
+    } catch (error) { }
+
+    // Inline handlers can cancel context menu/selection by returning false.
+    function hookLmsInlineHandler(proto, prop) {
+        try {
+            const descriptor = proto && Object.getOwnPropertyDescriptor(proto, prop);
+            if (!descriptor || typeof descriptor.set !== 'function') return;
+
+            const rawHandlers = new WeakMap();
+            const originalGet = descriptor.get;
+            const originalSet = descriptor.set;
+
+            const wrappedGet = originalGet
+                ? new Proxy(originalGet, {
+                    apply(target, thisArg, args) {
+                        const raw = rawHandlers.get(thisArg);
+                        return raw || $apply(target, thisArg, args);
+                    }
+                })
+                : originalGet;
+
+            const wrappedSet = new Proxy(originalSet, {
+                apply(target, thisArg, args) {
+                    const raw = args[0];
+
+                    if (typeof raw !== 'function') {
+                        rawHandlers.delete(thisArg);
+                        return $apply(target, thisArg, args);
+                    }
+
+                    const wrapped = function (event) {
+                        const result = $apply(raw, this, arguments);
+
+                        if (runtimeEnabled && result === false && isLmsProtectedEvent(event)) {
+                            sendLog('lms_unlock', `${event.type}:inline`);
+                            return true;
+                        }
+
+                        return result;
+                    };
+
+                    rawHandlers.set(thisArg, raw);
+                    return $apply(target, thisArg, [wrapped]);
+                }
+            });
+
+            Object.defineProperty(proto, prop, {
+                ...descriptor,
+                get: wrappedGet,
+                set: wrappedSet
+            });
+        } catch (error) { }
+    }
+
+    const inlineLmsHandlers = [
+        'oncopy',
+        'onpaste',
+        'oncut',
+        'oncontextmenu',
+        'onselectstart',
+        'ondragstart',
+        'onkeydown'
+    ];
+
+    const lmsWindowProto = typeof Window !== 'undefined' ? Window.prototype : null;
+
+    for (const proto of [lmsWindowProto, Document.prototype, HTMLElement.prototype]) {
+        for (const prop of inlineLmsHandlers) {
+            hookLmsInlineHandler(proto, prop);
+        }
     }
 
 })();
