@@ -22,10 +22,38 @@
     "service_worker": "background.js"
   },
   "permissions": [
-    "scripting",
     "storage"
   ],
   "host_permissions": [
     "<all_urls>"
+  ],
+  "minimum_chrome_version": "119",
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "relay.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "ISOLATED",
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "main.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN",
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    }
   ]
 }

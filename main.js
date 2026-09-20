@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         byfu (Stealth Shield)
 // @namespace    http://tampermonkey.net/
-// @version      0.0.1
+// @version      6.0.0
 // @description  Zero-Footprint Anti-Detection & LMS Shield
 // @author       evilst
 // @match        *://*/*
@@ -21,8 +21,22 @@
         : (Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2) + Date.now().toString(36));
     const commChannel = new MessageChannel();
     let filtersTriggered = false;
+    let runtimeEnabled = true;
+    let runtimeStateReady = false;
+    let usageLogged = false;
+
+    const setRuntimeEnabled = (enabled) => {
+        runtimeEnabled = enabled !== false;
+        runtimeStateReady = true;
+
+        if (runtimeEnabled && !usageLogged) {
+            usageLogged = true;
+            sendLog('usage_start', location.href);
+        }
+    };
 
     const sendLog = (type, detail) => {
+        if (!runtimeStateReady || !runtimeEnabled) return;
         if (type === 'blocked_event' || type === 'mutation_filtered' || type === 'success') {
             filtersTriggered = true;
         }
@@ -31,12 +45,27 @@
         } catch (e) { }
     };
     
-    window.postMessage({ token: handshakeToken }, "*", [commChannel.port2]);
-    sendLog('usage_start', location.href);
+    commChannel.port1.onmessage = (event) => {
+        try {
+            if (event.data && event.data.action === 'setEnabled') {
+                setRuntimeEnabled(event.data.enabled);
+            }
+        } catch (e) { }
+    };
+
+    // Relay is declared before MAIN in the manifest. Queue the transfer until
+    // the current script stack is complete so the relay listener is installed.
+    queueMicrotask(() => {
+        try {
+            window.postMessage({ type: "byfu:init", token: handshakeToken }, "*", [commChannel.port2]);
+        } catch (e) { }
+    });
     
     window.addEventListener('load', () => {
         setTimeout(() => {
-            if (!filtersTriggered) sendLog('info', 'Protection active, no fingerprinting detected.');
+            if (runtimeEnabled && runtimeStateReady && !filtersTriggered) {
+                sendLog('info', 'Protection active, no fingerprinting detected.');
+            }
         }, 4000);
     });
 
@@ -67,6 +96,9 @@
     const proxiedToString = new Proxy(originalToString, {
         apply(target, thisArg, args) {
             try {
+                if (!runtimeEnabled) {
+                    return $apply(target, thisArg, args);
+                }
                 if (hF.has(thisArg)) {
                     const name = thisArg.name ? thisArg.name.replace(/^(get|set)\s/, '') : '';
                     return `function ${name}() { [native code] }`;
@@ -92,9 +124,13 @@
         configurable: true,
         enumerable: false,
         get() {
-            return pagePrepareStackTrace; // Return the hooked version or undefined
+            return pagePrepareStackTrace;
         },
         set(val) {
+            if (!runtimeEnabled) {
+                pagePrepareStackTrace = val;
+                return;
+            }
             if (typeof val === 'function') {
                 pagePrepareStackTrace = function(err, traces) {
                     const filtered = [];
@@ -123,6 +159,9 @@
 
             const proxiedGet = new Proxy(originalGet, {
                 apply(target, thisArg, args) {
+                    if (!runtimeEnabled) {
+                        return $apply(target, thisArg, args);
+                    }
                     try {
                         $apply(target, thisArg, args);
                     } catch (err) {
@@ -153,6 +192,9 @@
             const safeHandlers = {};
             if (handlers.apply) {
                 safeHandlers.apply = function (target, thisArg, args) {
+                    if (!runtimeEnabled) {
+                        return $apply(target, thisArg, args);
+                    }
                     try {
                         return handlers.apply(target, thisArg, args);
                     } catch (e) {
@@ -162,6 +204,9 @@
             }
             if (handlers.construct) {
                 safeHandlers.construct = function (target, args, newTarget) {
+                    if (!runtimeEnabled) {
+                        return Reflect.construct(target, args, newTarget);
+                    }
                     try {
                         return handlers.construct(target, args, newTarget);
                     } catch (e) {
@@ -387,9 +432,9 @@
                     let wrapped = listenerWrapperMap.get(listener);
                     if (!wrapped) {
                         wrapped = function (event) {
-                            if (event && event.isTrusted) {
+                            if (runtimeEnabled && event && event.isTrusted) {
                                 sendLog('blocked_event', type);
-                                return; 
+                                return;
                             }
                             return $apply(callback, thisArg, arguments);
                         };
@@ -461,7 +506,7 @@
 
                         if (typeof rawListener === 'function') {
                             const wrapped = function (event) {
-                                if (event && event.isTrusted) {
+                                if (runtimeEnabled && event && event.isTrusted) {
                                     sendLog('blocked_event', type);
                                     return;
                                 }

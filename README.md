@@ -33,8 +33,8 @@ Byfu operates through a multi-tier architecture that decouples privileged backgr
                                            +------------------------------------+
                                            |      Background Service Worker     |
                                            |          (background.js)           |
-                                           | - Content Script Registration      |
-                                           | - Mutex-Guarded State Machine      |
+                                           | - Persistent Runtime State         |
+                                           | - Debounced Stats & Tab Logs       |
                                            | - Debounced Atomic Stats Batching  |
                                            | - Bounded Ring-Buffer Tab Logging  |
                                            +-----------------+------------------+
@@ -93,10 +93,10 @@ Byfu operates through a multi-tier architecture that decouples privileged backgr
 * **Strict CSP Fallback Engine**: If strict Content Security Policy directives (such as `worker-src 'self'`) reject dynamic URI schemes, Byfu gracefully constructs the standard Worker and proxies `addEventListener` / `onmessage` to sanitize outgoing telemetry messages, preventing worker denial-of-service crashes while preserving privacy.
 
 ### 10. High-Performance Extension Core
-* **Dynamic Content Script Lifecycle**: Leverages `chrome.scripting.registerContentScripts` under Manifest V3 to mount scripts dynamically into the `MAIN` and `ISOLATED` execution worlds.
-* **Mutex-Guarded State Transitions**: Employs a Promise-based sequential execution queue in `background.js` to eliminate race conditions during rapid state toggles.
+* **Static Content Script Lifecycle**: Declares `main.js` and `relay.js` statically in `manifest.json`, removing service-worker registration races and keeping the page injection lifecycle owned by Chrome.
+* **Runtime State Synchronization**: Stores the enabled state in `chrome.storage.local`; the isolated relay observes state changes and forwards them to the MAIN-world runtime without requiring script unregister/register cycles or page reloads.
 * **Debounced Atomic Storage I/O**: Batches statistical tracking updates in memory with debounced flushes to prevent storage concurrency overhead.
-* **Zero-Footprint Event Bridge**: Uses a private `MessageChannel` with dynamic token handshake during the DOM capturing phase to communicate telemetry from `MAIN` to `ISOLATED` without leaving global identifiers or window properties.
+* **Zero-Footprint Event Bridge**: Uses a private `MessageChannel` with a dynamic token handshake during the DOM capturing phase to communicate telemetry from `MAIN` to `ISOLATED` without global identifiers or window properties.
 
 ---
 
@@ -151,7 +151,7 @@ byfu/
 | Target Execution Worlds | `MAIN` (Core hooks) & `ISOLATED` (Relay bridge) |
 | Script Injection Timing | `document_start` |
 | Frame Coverage | All frames (`allFrames: true`) |
-| Required Permissions | `scripting`, `storage` |
+| Required Permissions | `storage` |
 | Host Permissions | `<all_urls>` |
 | Storage Architecture | `chrome.storage.local` with debounced write batching |
 | Memory Management | Ring buffer (bounded to 200 logs per active tab) |
