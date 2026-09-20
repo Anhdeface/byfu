@@ -47,6 +47,16 @@
         "<all_urls>"
       ],
       "js": [
+        "lms/core.js",
+        "lms/interaction-broker.js",
+        "lms/input-broker.js",
+        "lms/style-manager.js",
+        "lms/inline-broker.js",
+        "lms/modules/context-menu.js",
+        "lms/modules/selection.js",
+        "lms/modules/clipboard.js",
+        "lms/modules/drag.js",
+        "lms/index.js",
         "main.js"
       ],
       "run_at": "document_start",
