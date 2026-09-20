@@ -1,14 +1,3 @@
-// ==UserScript==
-// @name         byfu (Stealth Shield)
-// @namespace    http://tampermonkey.net/
-// @version      6.0.0
-// @description  Zero-Footprint Anti-Detection & LMS Shield
-// @author       evilst
-// @match        *://*/*
-// @run-at       document-start
-// @grant        none
-// ==/UserScript==
-
 (function () {
     'use strict';
 
@@ -587,77 +576,7 @@
     proxyFunction(window, 'setTimeout', { apply: codeSanitizerApply });
 
     // =========================================================
-    // 9. IFRAME PROTECTION
-    // =========================================================
-    const processedWindows = new WeakSet();
-
-    function hardenWindow(win) {
-        if (!win || processedWindows.has(win)) return;
-        processedWindows.add(win);
-        try {
-            if (win.Function && win.Function.prototype) {
-                Object.defineProperty(win.Function.prototype, 'toString', {
-                    value: proxiedToString,
-                    writable: true,
-                    configurable: true,
-                    enumerable: false
-                });
-            }
-            if (win.Document && win.Document.prototype) {
-                proxyGetter(win.Document.prototype, 'hidden', falseGetter);
-                proxyGetter(win.Document.prototype, 'visibilityState', visibleGetter);
-                proxyFunction(win.Document.prototype, 'hasFocus', { apply: trueGetter });
-            }
-            if (win.Navigator && win.Navigator.prototype) {
-                proxyGetter(win.Navigator.prototype, 'webdriver', falseGetter);
-                proxyGetter(win.Navigator.prototype, 'hardwareConcurrency', eightGetter);
-                proxyGetter(win.Navigator.prototype, 'deviceMemory', eightGetter);
-            }
-            if (win.WebGLRenderingContext) {
-                proxyFunction(win.WebGLRenderingContext.prototype, 'getParameter', spoofWebGLParameter);
-            }
-            if (win.WebGL2RenderingContext) {
-                proxyFunction(win.WebGL2RenderingContext.prototype, 'getParameter', spoofWebGLParameter);
-            }
-            if (win.Event && win.Event.prototype) {
-                proxyFunction(win.Event.prototype, 'preventDefault', {
-                    apply(target, thisArg, args) {
-                        if (thisArg && typeof thisArg.type === 'string' && lmsProtectedEvents.has(thisArg.type.toLowerCase()) && thisArg.isTrusted) {
-                            return;
-                        }
-                        return $apply(target, thisArg, args);
-                    }
-                });
-            }
-            if (win.Function) {
-                proxyFunction(win, 'Function', { apply: codeSanitizerApply, construct: codeSanitizerConstruct });
-            }
-            if (win.eval) {
-                proxyFunction(win, 'eval', { apply: codeSanitizerApply });
-            }
-        } catch (e) { }
-    }
-
-    proxyGetter(HTMLIFrameElement.prototype, 'contentWindow', (target, thisArg, args) => {
-        const win = $apply(target, thisArg, args);
-        if (win) hardenWindow(win);
-        return win;
-    });
-
-    proxyGetter(HTMLIFrameElement.prototype, 'contentDocument', (target, thisArg, args) => {
-        const doc = $apply(target, thisArg, args);
-        if (doc && doc.defaultView) hardenWindow(doc.defaultView);
-        return doc;
-    });
-
-    document.querySelectorAll('iframe').forEach(iframe => {
-        try {
-            if (iframe.contentWindow) hardenWindow(iframe.contentWindow);
-        } catch (e) { }
-    });
-
-    // =========================================================
-    // 10. WEB WORKER INJECTION & CSP FALLBACK PROXY
+    // 9. WEB WORKER INJECTION & CSP FALLBACK PROXY
     // =========================================================
     const workerCore = `
         (function() {

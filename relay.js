@@ -72,22 +72,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (
-    !message ||
-    message.from !== "byfu_background" ||
-    message.action !== "setEnabled"
-  ) {
-    return;
-  }
-
-  enabledState = message.enabled !== false;
-  stateReady = true;
-
-  if (activePort) {
-    postStateToMain(activePort);
-  }
-});
 
 window.addEventListener("message", function initListener(event) {
   const data = event.data;
