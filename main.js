@@ -4,7 +4,7 @@
     // =========================================================
     // 0. COMMUNICATION PORT (INVISIBLE TO DOM)
     // =========================================================
-    // Dynamic token handshake without static prefixes or honeypot signatures
+    // Ephemeral token handshake between MAIN and ISOLATED worlds.
     const handshakeToken = (typeof crypto !== 'undefined' && crypto.randomUUID)
         ? crypto.randomUUID()
         : (Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2) + Date.now().toString(36));
@@ -34,12 +34,9 @@
         } catch (e) { }
     };
 
-
     const LMS_RUNTIME_KEY = Symbol.for('byfu.lms.runtime.v1');
     const lmsRuntime = globalThis[LMS_RUNTIME_KEY];
 
-
-    
     commChannel.port1.onmessage = (event) => {
         try {
             if (event.data && event.data.action === 'setEnabled') {
@@ -109,10 +106,9 @@
     }
 
     // =========================================================
-    // 3. VISIBILITY / FOCUS
+    // 1. VISIBILITY / FOCUS
     // =========================================================
     const falseGetter = () => false;
-    const trueGetter = () => true;
     const visibleGetter = () => 'visible';
 
     proxyGetter(Document.prototype, 'hidden', falseGetter);
@@ -120,7 +116,7 @@
     proxyFunction(Document.prototype, 'hasFocus', { apply() { return true; } });
 
     // =========================================================
-    // 4. FULLSCREEN – PROTOTYPE LEVEL
+    // 2. FULLSCREEN – PROTOTYPE LEVEL
     // =========================================================
     const fsElementGetter = (target, thisArg) => thisArg.documentElement || thisArg.body;
     proxyGetter(Document.prototype, 'fullscreenElement', fsElementGetter);
@@ -131,7 +127,7 @@
     proxyFunction(Document.prototype, 'exitFullscreen', { apply: promiseResolver });
 
     // =========================================================
-    // 5. HARDWARE & WEBDRIVER FINGERPRINT SPOOFING
+    // 3. HARDWARE & WEBDRIVER FINGERPRINT SPOOFING
     // =========================================================
     proxyGetter(Navigator.prototype, 'webdriver', falseGetter);
     const eightGetter = () => 8;
@@ -139,7 +135,7 @@
     proxyGetter(Navigator.prototype, 'deviceMemory', eightGetter); 
 
     // =========================================================
-    // 6. CANVAS PRIVACY
+    // 4. CANVAS PRIVACY
     // =========================================================
     const SESSION_SALT = Math.floor(Math.random() * 1000000);
 

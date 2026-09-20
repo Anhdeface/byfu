@@ -23,7 +23,6 @@ lms/input-broker.js
 lms/style-manager.js
 lms/inline-broker.js
 lms/modules/*.js
-lms/index.js
 main.js
 ```
 
@@ -209,7 +208,6 @@ byfu/
 │   ├── input-broker.js
 │   ├── style-manager.js
 │   ├── inline-broker.js
-│   ├── index.js
 │   └── modules/
 │       ├── context-menu.js
 │       ├── selection.js

@@ -56,7 +56,6 @@
         "lms/modules/selection.js",
         "lms/modules/clipboard.js",
         "lms/modules/drag.js",
-        "lms/index.js",
         "main.js"
       ],
       "run_at": "document_start",
